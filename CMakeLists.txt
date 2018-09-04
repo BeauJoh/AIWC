@@ -16,6 +16,8 @@ include(CheckIncludeFileCXX)
 include(CheckLibraryExists)
 include(TestBigEndian)
 
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -O0")
+
 # Enable C99 for GCC (required for tests)
 if (CMAKE_COMPILER_IS_GNUCC)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
@@ -81,6 +83,27 @@ if (NOT (${LLVM_PACKAGE_VERSION} VERSION_LESS "4.0"))
   list(APPEND LLVM_LIBS ${LLVM_COROUTINES})
 endif()
 
+# Check for level-DB -- Optional for AIWC
+#option(USE_LEVELDB "USE_LEVELDB" OFF)
+if(USE_LEVELDB)
+    find_path(LevelDB_INCLUDE NAMES leveldb/db.h
+                              PATHS $ENV{LEVELDB_ROOT}/include /opt/local/include /usr/local/include /usr/include
+                              DOC "Path in which the file leveldb/db.h is located." )
+    find_library(LevelDB_LIBRARY NAMES leveldb
+		 PATHS $ENV{LEVELDB_ROOT}/lib /opt/local/lib /usr/local/lib /usr/lib
+                 DOC "Path to leveldb library." )
+    include(FindPackageHandleStandardArgs)
+    find_package_handle_standard_args(LevelDB DEFAULT_MSG LevelDB_INCLUDE LevelDB_LIBRARY)
+    if(LEVELDB_FOUND)
+	message(STATUS "Found LevelDB (include: ${LevelDB_INCLUDE}, library: ${LevelDB_LIBRARY})")
+    else()
+        message(FATAL_ERROR "LevelDB libraries not found (set LEVELDB_ROOT")
+    endif()
+
+    set(LevelDB_LIBRARIES ${LevelDB_LIBRARY})
+    set(LevelDB_ENABLED LEVELDB_ENABLED=1)
+    include_directories(${LevelDB_INCLUDE})
+endif()
 
 # Allow user to set path to Clang installation via CLANG_ROOT
 set (CLANG_ROOT " " CACHE PATH "Root of Clang installation")
@@ -230,10 +253,11 @@ add_library(oclgrind ${CORE_LIB_TYPE}
   src/plugins/Uninitialized.cpp
   src/plugins/WorkloadCharacterisation.h
   src/plugins/WorkloadCharacterisation.cpp)
+target_compile_definitions(oclgrind PRIVATE ${LevelDB_ENABLED})
 target_link_libraries(oclgrind PRIVATE ${CORE_EXTRA_LIBS}
   clangFrontend clangSerialization clangDriver clangCodeGen
   clangParse clangSema clangAnalysis clangEdit clangAST clangLex clangBasic
-  ${LLVM_LIBS})
+  ${LLVM_LIBS} ${LevelDB_LIBRARIES})
 
 if ("${CMAKE_SYSTEM_NAME}" STREQUAL "Windows")
   target_link_libraries(oclgrind PRIVATE Version)

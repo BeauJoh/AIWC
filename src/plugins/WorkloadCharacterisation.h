@@ -9,6 +9,11 @@
 #include "core/Plugin.h"
 
 #include <mutex>
+#if LEVELDB_ENABLED
+#include <leveldb/db.h>
+#include <fstream>
+#include <iostream>
+#endif
 
 namespace llvm
 {
@@ -21,7 +26,7 @@ namespace oclgrind
   {
   public:
     WorkloadCharacterisation(const Context *context) : Plugin(context){};
-
+    ~WorkloadCharacterisation();
     virtual void instructionExecuted(const WorkItem *workItem,
                                      const llvm::Instruction *instruction,
                                      const TypedValue& result) override;
@@ -39,18 +44,26 @@ namespace oclgrind
     virtual void workItemClearBarrier(const WorkItem *workItem) override;
 
   private:
-    std::vector<std::pair<size_t,size_t>> m_memoryOps;
+#if LEVELDB_ENABLED
+    std::string load_db_name;
+    std::string store_db_name;
+    std::vector<std::pair<std::string,leveldb::DB*>> db_tracefile_handles;
+#else
+    std::vector<std::pair<size_t,size_t>> m_loadMemoryOps;
+    std::vector<std::pair<size_t,size_t>> m_storeMemoryOps;
     std::unordered_map<std::string,size_t> m_computeOps;
     std::unordered_map<unsigned,std::vector<bool>> m_branchOps;
     std::vector<float> m_instructionsToBarrier;
     std::vector<size_t> m_instructionWidth;
     unsigned m_threads_invoked;
     unsigned m_barriers_hit;
+#endif
 
     struct WorkerState
     {
       std::unordered_map<std::string,size_t> *computeOps;
-      std::vector<std::pair<size_t,size_t>> *memoryOps;
+      std::vector<std::pair<size_t,size_t>> *loadMemoryOps;
+      std::vector<std::pair<size_t,size_t>> *storeMemoryOps;
       bool previous_instruction_is_branch;
       std::string target1, target2;
       unsigned branch_loc;

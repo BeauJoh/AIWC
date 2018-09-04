@@ -13,7 +13,7 @@
 #include <vector>
 #include <math.h>
 #include <fstream>
-
+#include <cstdlib>
 #include <csignal>
 #include <iomanip>
 
@@ -42,33 +42,49 @@ using namespace std;
 THREAD_LOCAL WorkloadCharacterisation::WorkerState
 WorkloadCharacterisation::m_state = {NULL};
 
+WorkloadCharacterisation::~WorkloadCharacterisation(){
+    delete m_state.loadMemoryOps;
+    delete m_state.storeMemoryOps;
+    delete m_state.computeOps;
+    delete m_state.branchOps;
+    delete m_state.instructionsBetweenBarriers;
+}
+
 void WorkloadCharacterisation::memoryLoad(const Memory *memory, const WorkItem *workItem,size_t address, size_t size){
-    m_state.memoryOps->push_back(std::make_pair((size_t)(memory->getPointer(address)),//address
-                size));//size (in bytes)
+    //m_state.memoryOps->push_back(std::make_pair((size_t)(memory->getPointer(address)),//address
+    //                                            size));//size (in bytes)
+    m_state.loadMemoryOps->push_back(std::make_pair((size_t)(memory->getPointer(address)),//address
+				 size));//size (in bytes)
 }
 
 void WorkloadCharacterisation::memoryStore(const Memory *memory, const WorkItem *workItem,size_t address, size_t size, const uint8_t *storeData){
-    m_state.memoryOps->push_back(std::make_pair((size_t)(memory->getPointer(address)),//address
-                size));//size (in bytes)
+    //m_state.memoryOps->push_back(std::make_pair((size_t)(memory->getPointer(address)),//address
+    //				 size));//size (in bytes)
+    m_state.storeMemoryOps->push_back(std::make_pair((size_t)(memory->getPointer(address)),//address
+				 size));//size (in bytes)
 }
 
 void WorkloadCharacterisation::memoryAtomicLoad(const Memory *memory, const WorkItem *workItem, AtomicOp op, size_t address, size_t size)
 {
-    m_state.memoryOps->push_back(std::make_pair((size_t)(memory->getPointer(address)),//address
-                size));//size (in bytes)
+    m_state.loadMemoryOps->push_back(std::make_pair((size_t)(memory->getPointer(address)),//address
+                           		            size));//size (in bytes)
+
+    //m_state.memoryOps->push_back(std::make_pair((size_t)(memory->getPointer(address)),//address
+    //				 size));//size (in bytes)
 }
 
 void WorkloadCharacterisation::memoryAtomicStore(const Memory *memory, const WorkItem *workItem, AtomicOp op, size_t address, size_t size)
 {
-    m_state.memoryOps->push_back(std::make_pair((size_t)(memory->getPointer(address)),//address
-                size));//size (in bytes)
+    m_state.storeMemoryOps->push_back(std::make_pair((size_t)(memory->getPointer(address)),//address
+				 size));//size (in bytes)
+//  m_state.memoryOps->push_back(std::make_pair((size_t)(memory->getPointer(address)),//address
+//				 size));//size (in bytes)
 }
 
 void WorkloadCharacterisation::instructionExecuted(
         const WorkItem *workItem, const llvm::Instruction *instruction,
         const TypedValue& result)
 {
-
     unsigned opcode = instruction->getOpcode();
     std::string opcode_name = llvm::Instruction::getOpcodeName(opcode);
     (*m_state.computeOps)[opcode_name]++;
@@ -142,17 +158,65 @@ void WorkloadCharacterisation::workItemComplete(const WorkItem *workItem)
 
 void WorkloadCharacterisation::kernelBegin(const KernelInvocation *kernelInvocation)
 {
-    m_memoryOps.clear();
+#if LEVELDB_ENABLED
+    std::cout << "running kernel "+kernelInvocation->getKernel()->getName() << std::endl;
+    //std::cout << "Will initialise a new database here" << std::endl;
+    load_db_name = "/tmp/load_"+kernelInvocation->getKernel()->getName()+"_db";
+    store_db_name = "/tmp/store_"+kernelInvocation->getKernel()->getName()+"_db";
+    leveldb::DB* load_db;
+    leveldb::DB* store_db;
+    
+    //create db file handles for this kernel -- to record a trace without exhausting heap memory
+    leveldb::Options options;
+    options.create_if_missing = true;
+    leveldb::Status status = leveldb::DB::Open(options, load_db_name, &load_db);
+    assert(status.ok());
+    status = leveldb::DB::Open(options, store_db_name, &store_db);
+    assert(status.ok());
+
+    db_tracefile_handles.push_back(std::pair<std::string,leveldb::DB*>(load_db_name,load_db));
+    db_tracefile_handles.push_back(std::pair<std::string,leveldb::DB*>(store_db_name,store_db));
+    std::cout << "passed kernel creation" << std::endl;
+    /*
+    leveldb::Options options;
+    options.create_if_missing = true;
+    load_db_name = "/tmp/load_"+kernelInvocation->getKernel()->getName()+"_db";
+    store_db_name = "/tmp/store_"+kernelInvocation->getKernel()->getName()+"_db";
+    leveldb::Status status = leveldb::DB::Open(options, load_db_name, &load_db);
+    assert(status.ok());
+    status = leveldb::DB::Open(options, store_db_name, &store_db);
+    assert(status.ok());
+    */
+#else
+    m_loadMemoryOps.clear();
+    m_storeMemoryOps.clear();
     m_computeOps.clear();
     m_branchOps.clear();
     m_instructionsToBarrier.clear();
     m_instructionWidth.clear();
     m_threads_invoked = 0;
     m_barriers_hit = 0;
+#endif
 }
 
 void WorkloadCharacterisation::kernelEnd(const KernelInvocation *kernelInvocation)
 {
+#if LEVELDB_ENABLED
+    std::cout << "starting kernel end" << std::endl;
+    //remove all intermediate trace files now that the statistical results are written
+    
+    //remove all db intermediate trace files now that the statistical results are written 
+    for(auto const& item: db_tracefile_handles){
+        delete item.second;
+    }
+    db_tracefile_handles.clear();
+
+    //delete load_db;
+    //delete store_db;
+    std::system(std::string("rm -r " + load_db_name).c_str());
+    std::system(std::string("rm -r " + store_db_name).c_str());
+    std::cout << "passed kernel end" << std::endl;
+#else
     // Load default locale
     locale previousLocale = cout.getloc();
     locale defaultLocale("");
@@ -251,23 +315,56 @@ void WorkloadCharacterisation::kernelEnd(const KernelInvocation *kernelInvocatio
     cout << "+--------------------------------------------------------------------------+" << endl;
     cout << "|Total Memory Footprint -- total number of unique memory addresses accessed|" << endl;
     cout << "+==========================================================================+" << endl;
+    unsigned int number_of_unique_sorted_addresses;
+    unsigned int number_of_unique_reads;
+    unsigned int number_of_unique_writes;
+    std::vector<unsigned> load_addresses;
 
+    for(const auto& it : m_loadMemoryOps){
+        load_addresses.push_back(it.first);
+    }
+    std::vector<unsigned> store_addresses;
+    for(const auto& it : m_storeMemoryOps){
+        store_addresses.push_back(it.first);
+    }
     std::vector<unsigned> addresses;
-    for(const auto& it : m_memoryOps){
+    for(const auto& it : m_loadMemoryOps){
+        addresses.push_back(it.first);
+    }
+    for(const auto& it : m_storeMemoryOps){
         addresses.push_back(it.first);
     }
 
     std::vector<unsigned> sorted_addresses = addresses;
-
     std::sort(sorted_addresses.begin(),sorted_addresses.end());
-
-    std::vector<unsigned> unique_sorted_addresses = sorted_addresses;
+    unique_sorted_addresses = sorted_addresses;
     std::vector<unsigned>::iterator unique_it;
-
     unique_it = std::unique(unique_sorted_addresses.begin(),unique_sorted_addresses.end());
     unique_sorted_addresses.resize(std::distance(unique_sorted_addresses.begin(),unique_it));
+    number_of_unique_sorted_addresses = unique_sorted_addresses.size();
+    cout << "Unique addresses accessed: " << number_of_unique_sorted_addresses << endl;
 
-    cout << unique_sorted_addresses.size() << endl;
+    sorted_addresses = load_addresses;
+    std::sort(sorted_addresses.begin(),sorted_addresses.end());
+    unique_sorted_addresses = sorted_addresses;
+    unique_it = std::unique(unique_sorted_addresses.begin(),unique_sorted_addresses.end());
+    unique_sorted_addresses.resize(std::distance(unique_sorted_addresses.begin(),unique_it));
+    cout << "Unique read addresses: " << unique_sorted_addresses.size() << endl;
+    number_of_unique_reads =  unique_sorted_addresses.size();
+
+    sorted_addresses = store_addresses;
+    std::sort(sorted_addresses.begin(),sorted_addresses.end());
+    unique_sorted_addresses = sorted_addresses;
+    unique_it = std::unique(unique_sorted_addresses.begin(),unique_sorted_addresses.end());
+    unique_sorted_addresses.resize(std::distance(unique_sorted_addresses.begin(),unique_it));
+    cout << "Unique write addresses: " << unique_sorted_addresses.size() << endl;
+    number_of_unique_writes =  unique_sorted_addresses.size();
+
+    cout << "unique read/write ratio: " << (static_cast<float>(number_of_unique_reads)/static_cast<float>(number_of_unique_writes)) << endl;
+    cout << "total reads: " << load_addresses.size() << endl;
+    cout << "total writes: " << store_addresses.size() << endl;
+    cout << "reread ratio (unique reads/total reads): " << (static_cast<float>(number_of_unique_reads)/static_cast<float>(load_addresses.size())) << endl;
+    cout << "rewrite ratio (unique writes/total writes): " << (static_cast<float>(number_of_unique_writes)/static_cast<float>(load_addresses.size())) << endl;
 
     cout << "+----------------------------------------------------------------------------------------------+" << endl;
     cout << "|90% Memory Footprint -- Number of unique memory addresses that cover 90\% of memory accesses   |" << endl;
@@ -449,7 +546,16 @@ void WorkloadCharacterisation::kernelEnd(const KernelInvocation *kernelInvocatio
     logfile << "granularity," << granularity << "\n";
     logfile << "barriers per instruction," << barriers_per_instruction << "\n";
     logfile << "instructions per operand," << instructions_per_operand << "\n";
-    logfile << "total memory footprint," << unique_sorted_addresses.size() << "\n";
+
+    logfile << "unique memory footprint," << unique_sorted_addresses.size() << "\n";
+    logfile << "unique reads," << number_of_unique_reads << "\n";
+    logfile << "unique writes," << number_of_unique_writes << "\n";
+    logfile << "unique read/write ratio," << (static_cast<float>(number_of_unique_reads)/static_cast<float>(number_of_unique_writes)) << "\n";
+    logfile << "total memory footprint," << addresses.size() << "\n";
+    logfile << "total reads," << load_addresses.size() << "\n";
+    logfile << "total writes," << store_addresses.size() << "\n";
+    logfile << "reread ratio (unique reads/total reads)," << (static_cast<float>(number_of_unique_reads)/static_cast<float>(load_addresses.size())) << "\n";
+    logfile << "rewrite ratio (unique writes/total writes)," << (static_cast<float>(number_of_unique_writes)/static_cast<float>(load_addresses.size())) << "\n";
     logfile << "90\% memory footprint," << unique_memory_addresses  << "\n";
     logfile << "global memory address entropy," << mem_entropy << "\n";
     for(int nskip = 1; nskip < 11; nskip++){
@@ -468,6 +574,7 @@ void WorkloadCharacterisation::kernelEnd(const KernelInvocation *kernelInvocatio
         }
         logfile << "local memory address entropy -- " << nskip << " LSBs skipped," << local_entropy << "\n";
     }
+
     logfile << "total unique branch instructions," << sorted_branch_ops.size() << "\n";
     logfile << "90\% branch instructions," << unique_branch_addresses << "\n";
     logfile << "branch entropy (yokota)," << yokota_entropy_per_workload << "\n";
@@ -485,30 +592,51 @@ void WorkloadCharacterisation::kernelEnd(const KernelInvocation *kernelInvocatio
     cout.imbue(previousLocale);
 
     // Reset kernel counts, ready to start anew
-    m_memoryOps.clear();
     m_computeOps.clear();
     m_branchOps.clear();
+    m_instructionWidth.clear();
     m_instructionsToBarrier.clear();
     m_threads_invoked = 0;
+
+    //free the memory
+    m_loadMemoryOps.clear();
+    m_storeMemoryOps.clear();
+    std::vector<std::pair<size_t,size_t>>().swap(m_loadMemoryOps);
+    std::vector<std::pair<size_t,size_t>>().swap(m_storeMemoryOps);
+    std::unordered_map<std::string,size_t>().swap(m_computeOps);
+    std::unordered_map<unsigned,std::vector<bool>>().swap(m_branchOps);
+    std::vector<float>().swap(m_instructionsToBarrier);
+    std::vector<size_t>().swap(m_instructionWidth);
+#endif
 }
 
 void WorkloadCharacterisation::workGroupBegin(const WorkGroup *workGroup)
 {
+    std::cout << "starting workgroup " << workGroup->getGroupIndex() <<  std::endl;
     // Create worker state if haven't already
-    if (!m_state.memoryOps)
+    if (!m_state.loadMemoryOps)
     {
-        m_state.memoryOps = new vector<std::pair<size_t,size_t>>;
+        m_state.loadMemoryOps = new vector<std::pair<size_t,size_t>>;
+	m_state.storeMemoryOps = new vector<std::pair<size_t,size_t>>;
         m_state.computeOps = new unordered_map<std::string,size_t>;
         m_state.branchOps = new unordered_map<unsigned,std::vector<bool>>;
         m_state.instructionsBetweenBarriers = new vector<unsigned>;
         m_state.instructionWidth = new vector<unsigned>;
     }
 
-    m_state.memoryOps->clear();
+    m_state.loadMemoryOps->clear();
+    m_state.storeMemoryOps->clear();
     m_state.computeOps->clear();
     m_state.branchOps->clear();
     m_state.instructionsBetweenBarriers->clear();
     m_state.instructionWidth->clear();
+
+    std::vector<std::pair<size_t,size_t>>().swap(*m_state.loadMemoryOps);
+    std::vector<std::pair<size_t,size_t>>().swap(*m_state.storeMemoryOps);
+    std::unordered_map<std::string,size_t>().swap(*m_state.computeOps);
+    std::unordered_map<unsigned,std::vector<bool>>().swap(*m_state.branchOps);
+    std::vector<unsigned>().swap(*m_state.instructionsBetweenBarriers);
+    std::vector<unsigned>().swap(*m_state.instructionWidth);
 
     m_state.threads_invoked=0;
     m_state.instruction_count=0;
@@ -518,22 +646,25 @@ void WorkloadCharacterisation::workGroupBegin(const WorkGroup *workGroup)
     m_state.previous_instruction_is_branch=false;
     m_state.target1="";
     m_state.target2="";
-    m_state.branch_loc=0;
-    
+    m_state.branch_loc=0; 
 }
 
 void WorkloadCharacterisation::workGroupComplete(const WorkGroup *workGroup)
 {
-
     lock_guard<mutex> lock(m_mtx);
-
+#if LEVELDB_ENABLED
+    std::cout << "finished workgroup " << workGroup->getGroupIndex() <<  std::endl;
+    // write essential buffers to their respective files
+#else
     // merge operation counts back into global unordered map
     for(auto const& item: (*m_state.computeOps))
         m_computeOps[item.first]+=item.second;
 
-    // merge memory operations into global list
-    m_memoryOps.insert(m_memoryOps.end(),m_state.memoryOps->begin(),m_state.memoryOps->end());
-    m_state.memoryOps->clear();
+    // merge memory operations into global lists
+    m_loadMemoryOps.insert(m_loadMemoryOps.end(),m_state.loadMemoryOps->begin(),m_state.loadMemoryOps->end());
+    m_state.loadMemoryOps->clear();
+    m_storeMemoryOps.insert(m_storeMemoryOps.end(),m_state.storeMemoryOps->begin(),m_state.storeMemoryOps->end());
+    m_state.storeMemoryOps->clear();
 
     // merge control operations into global unordered map
     for(auto const& item: (*m_state.branchOps))
@@ -552,6 +683,6 @@ void WorkloadCharacterisation::workGroupComplete(const WorkGroup *workGroup)
     // add the SIMD scores back to the global setting
     for(auto const& item: (*m_state.instructionWidth))
         m_instructionWidth.push_back(item);
-
+#endif
 }
 

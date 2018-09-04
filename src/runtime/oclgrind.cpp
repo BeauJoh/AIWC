@@ -426,41 +426,43 @@ static void printUsage()
     << "       oclgrind [--help | --version]" << endl
     << endl
     << "Options:" << endl
-    << "     --build-options  OPTIONS  "
+    << "     --build-options  OPTIONS    "
              "Additional options to pass to the OpenCL compiler" << endl
-    << "     --check-api               "
-             "Report errors on API calls" << endl
-    << "     --data-races              "
-             "Enable data-race detection" << endl
-    << "     --disable-pch             "
+    << "     --workload-characterisation "
+             "Report Architecture Independent Workload Characterisation (AIWC) metrics" << endl
+    << "     --check-api                 "
+             "Report errors on API calls " << endl
+    << "     --data-races                "
+             "Enable data-race detection " << endl
+    << "     --disable-pch               "
              "Don't use precompiled headers" << endl
-    << "     --dump-spir               "
+    << "     --dump-spir                  "
              "Dump SPIR to /tmp/oclgrind_*.{ll,bc}" << endl
-    << "  -h --help                    "
-             "Display usage information" << endl
-    << "     --inst-counts             "
+    << "  -h --help                      "
+             "Display usage information  " << endl
+    << "     --inst-counts               "
              "Output histograms of instructions executed" << endl
-    << "  -i --interactive             "
+    << "  -i --interactive               "
              "Enable interactive mode" << endl
-    << "     --log            LOGFILE  "
+    << "     --log            LOGFILE    "
              "Redirect log/error messages to a file" << endl
-    << "     --max-errors     NUM      "
+    << "     --max-errors     NUM        "
              "Limit the number of error/warning messages" << endl
-    << "     --max-wgsize     WGSIZE   "
+    << "     --max-wgsize     WGSIZE     "
              "Change the maximum work-group size of the device" << endl
-    << "     --num-threads    NUM      "
+    << "     --num-threads    NUM        "
              "Set the number of worker threads to use" << endl
-    << "     --pch-dir        DIR      "
+    << "     --pch-dir        DIR        "
              "Override directory containing precompiled headers" << endl
-    << "     --plugins        PLUGINS  "
+    << "     --plugins        PLUGINS    "
              "Load colon separated list of plugin libraries" << endl
-    << "  -q --quick                   "
+    << "  -q --quick                     "
              "Only run first and last work-group" << endl
-    << "     --uniform-writes          "
+    << "     --uniform-writes            "
              "Don't suppress uniform write-write data-races" << endl
-    << "     --uninitialized           "
+    << "     --uninitialized             "
              "Report usage of uninitialized values" << endl
-    << "  -v --version                 "
+    << "  -v --version                   "
              "Display version information" << endl
     << endl
     << "For more information, please visit the Oclgrind wiki page:" << endl
