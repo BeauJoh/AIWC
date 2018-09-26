@@ -45,9 +45,11 @@ namespace oclgrind
 
   private:
 #if LEVELDB_ENABLED
+    std::string compute_db_name;
     std::string load_db_name;
     std::string store_db_name;
-    std::vector<std::pair<std::string,leveldb::DB*>> db_tracefile_handles;
+    std::unordered_map<std::string,leveldb::DB*> db_tracefile_handles;
+
 #else
     std::vector<std::pair<size_t,size_t>> m_loadMemoryOps;
     std::vector<std::pair<size_t,size_t>> m_storeMemoryOps;
@@ -55,9 +57,9 @@ namespace oclgrind
     std::unordered_map<unsigned,std::vector<bool>> m_branchOps;
     std::vector<float> m_instructionsToBarrier;
     std::vector<size_t> m_instructionWidth;
+#endif
     unsigned m_threads_invoked;
     unsigned m_barriers_hit;
-#endif
 
     struct WorkerState
     {

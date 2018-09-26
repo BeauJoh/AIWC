@@ -156,37 +156,65 @@ void WorkloadCharacterisation::workItemComplete(const WorkItem *workItem)
     m_state.instruction_count = 0;
 }
 
+#if LEVELDB_ENABLED
+//database utility functions
+void update(leveldb::DB* database,std::string key, unsigned int count)
+{
+    std::string pvalue;
+    leveldb::Status status;
+    status = database->Get(leveldb::ReadOptions(), key, &pvalue);
+    if (status.ok()){ // if a count already exists in the database add it
+          unsigned int pcount = std::stoi(pvalue);
+          count += pcount;
+          //std::cout << "status = " << status.ToString() << std::endl;
+    }
+    std::string new_value = std::to_string(count);
+    //store into database
+    status = database->Put(leveldb::WriteOptions(), key, new_value);
+    assert(status.ok());
+}
+
+std::string query(leveldb::DB* database, std::string key)
+{
+    std::string value;
+    leveldb::Status status;
+    status = database->Get(leveldb::ReadOptions(), key, &value);
+    if (status.ok()){ // if a count already exists in the database add it
+        return(value);
+    } else {
+        return(std::to_string(0));
+    }
+}
+#endif
+
 void WorkloadCharacterisation::kernelBegin(const KernelInvocation *kernelInvocation)
 {
 #if LEVELDB_ENABLED
     std::cout << "running kernel "+kernelInvocation->getKernel()->getName() << std::endl;
     //std::cout << "Will initialise a new database here" << std::endl;
+    compute_db_name = "/tmp/compute_"+kernelInvocation->getKernel()->getName()+"_db";
     load_db_name = "/tmp/load_"+kernelInvocation->getKernel()->getName()+"_db";
     store_db_name = "/tmp/store_"+kernelInvocation->getKernel()->getName()+"_db";
+
+    leveldb::DB* compute_db;
     leveldb::DB* load_db;
     leveldb::DB* store_db;
     
     //create db file handles for this kernel -- to record a trace without exhausting heap memory
     leveldb::Options options;
     options.create_if_missing = true;
-    leveldb::Status status = leveldb::DB::Open(options, load_db_name, &load_db);
+    leveldb::Status status;
+    status = leveldb::DB::Open(options, compute_db_name, &compute_db);
+    assert(status.ok());
+    status = leveldb::DB::Open(options, load_db_name, &load_db);
     assert(status.ok());
     status = leveldb::DB::Open(options, store_db_name, &store_db);
     assert(status.ok());
 
-    db_tracefile_handles.push_back(std::pair<std::string,leveldb::DB*>(load_db_name,load_db));
-    db_tracefile_handles.push_back(std::pair<std::string,leveldb::DB*>(store_db_name,store_db));
+    db_tracefile_handles[compute_db_name] = compute_db;
+    db_tracefile_handles[load_db_name] = load_db;
+    db_tracefile_handles[store_db_name] = store_db;
     std::cout << "passed kernel creation" << std::endl;
-    /*
-    leveldb::Options options;
-    options.create_if_missing = true;
-    load_db_name = "/tmp/load_"+kernelInvocation->getKernel()->getName()+"_db";
-    store_db_name = "/tmp/store_"+kernelInvocation->getKernel()->getName()+"_db";
-    leveldb::Status status = leveldb::DB::Open(options, load_db_name, &load_db);
-    assert(status.ok());
-    status = leveldb::DB::Open(options, store_db_name, &store_db);
-    assert(status.ok());
-    */
 #else
     m_loadMemoryOps.clear();
     m_storeMemoryOps.clear();
@@ -194,15 +222,151 @@ void WorkloadCharacterisation::kernelBegin(const KernelInvocation *kernelInvocat
     m_branchOps.clear();
     m_instructionsToBarrier.clear();
     m_instructionWidth.clear();
+#endif
     m_threads_invoked = 0;
     m_barriers_hit = 0;
-#endif
 }
 
 void WorkloadCharacterisation::kernelEnd(const KernelInvocation *kernelInvocation)
 {
 #if LEVELDB_ENABLED
     std::cout << "starting kernel end" << std::endl;
+
+    // log of AIWC metrics to stdout 
+    locale previousLocale = cout.getloc();
+    locale defaultLocale("");
+    cout.imbue(defaultLocale);
+    cout << "Architecture-Independent Workload Characterization (AIWC) metrics of kernel: " << kernelInvocation->getKernel()->getName() << endl;
+
+    cout << "+----------------------------------------------------------------------------+" << endl;
+    cout << "|Compute Opcode Instruction Histogram                                        |" << endl;
+    cout << "+============================================================================+" << endl;
+
+    leveldb::Iterator* it;
+    it = db_tracefile_handles[compute_db_name]->NewIterator(leveldb::ReadOptions());
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+        cout << "instruction: " << it->key().ToString() << " count: "  << it->value().ToString() << endl;
+    }
+    assert(it->status().ok());  // Check for any errors found during the scan
+    delete it;
+
+    cout << "+----------------------------------------------------------------------------+" << endl;
+    cout << "|Compute Opcode Unique Opcodes required to cover 90\% of Dynamic Instructions |" << endl;
+    cout << "+============================================================================+" << endl;
+
+    std::vector<std::pair<std::string,size_t>> sorted_ops;
+    it = db_tracefile_handles[compute_db_name]->NewIterator(leveldb::ReadOptions());
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+        sorted_ops.push_back(make_pair(it->key().ToString(),std::stoi(it->value().ToString()))); 
+    }
+    assert(it->status().ok());  // Check for any errors found during the scan
+    delete it;
+
+    std::sort(sorted_ops.begin(),sorted_ops.end(),[](const std::pair<std::string,size_t> &left, const std::pair<std::string,size_t> &right){
+            return (left.second > right.second);
+	    });
+
+    size_t operation_count = 0;
+
+    for(auto const& item: sorted_ops)
+        operation_count += item.second;
+
+    size_t significant_operation_count = (unsigned)ceil(operation_count * 0.9);
+
+    size_t major_operations = 0;
+    size_t total_instruction_count = operation_count;
+    operation_count = 0;
+
+    cout << "Unique Op Codes comprising of 90\% of dynamic instructions:" << endl;
+    while (operation_count < significant_operation_count){
+        operation_count += sorted_ops[major_operations].second;
+        cout << "\t" << sorted_ops[major_operations].first << endl;
+        major_operations++;
+    }
+
+    cout << "Unique Opcodes required to cover 90\% of Dynamic Instructions: " << major_operations << endl;
+    cout << "Total Instruction Count: " << total_instruction_count << endl;
+
+    cout << "+--------------------------------------------------------------------------+" << endl;
+    cout << "|Instruction Level Parallelism                                             |" << endl;
+    cout << "+==========================================================================+" << endl;
+
+    cout << "# of workitems invoked: " << m_threads_invoked << endl;
+    cout << "total # of workitem barriers hit: " << m_barriers_hit << endl;
+
+    // log of AIWC metrics csv to file 
+    int logfile_count = 0;
+    std::string logfile_name = "aiwc_" + kernelInvocation->getKernel()->getName() + "_" + std::to_string(logfile_count) + ".csv";
+    while(std::ifstream(logfile_name)){
+        logfile_count ++;
+        logfile_name = "aiwc_" + kernelInvocation->getKernel()->getName() + "_" + std::to_string(logfile_count) + ".csv";
+    }
+    std::ofstream logfile;
+    logfile.open(logfile_name);
+    assert(logfile);
+    logfile << "metric,count\n";
+    logfile << "opcode," << major_operations << "\n";
+    logfile << "total instruction count," << total_instruction_count << "\n";
+    logfile << "workitems," << m_threads_invoked << "\n";
+/*
+    logfile << "operand sum," << simd_sum << "\n";
+    logfile << "total # of barriers hit," << m_barriers_hit << "\n";
+    logfile << "min instructions to barrier," << *std::min_element(m_instructionsToBarrier.begin(),m_instructionsToBarrier.end()) << "\n";
+    logfile << "max instructions to barrier," << *std::max_element(m_instructionsToBarrier.begin(),m_instructionsToBarrier.end()) << "\n";
+    logfile << "median instructions to barrier," << median_itb << "\n";
+    logfile << "max simd width," << *std::max_element(m_instructionWidth.begin(),m_instructionWidth.end()) << "\n";
+    logfile << "mean simd width," << simd_mean << "\n";
+    logfile << "stdev simd width,"<< simd_stdev << "\n";
+    logfile << "granularity," << granularity << "\n";
+    logfile << "barriers per instruction," << barriers_per_instruction << "\n";
+    logfile << "instructions per operand," << instructions_per_operand << "\n";
+
+    logfile << "unique memory footprint," << unique_sorted_addresses.size() << "\n";
+    logfile << "unique reads," << number_of_unique_reads << "\n";
+    logfile << "unique writes," << number_of_unique_writes << "\n";
+    logfile << "unique read/write ratio," << (static_cast<float>(number_of_unique_reads)/static_cast<float>(number_of_unique_writes)) << "\n";
+    logfile << "total memory footprint," << addresses.size() << "\n";
+    logfile << "total reads," << load_addresses.size() << "\n";
+    logfile << "total writes," << store_addresses.size() << "\n";
+    logfile << "reread ratio (unique reads/total reads)," << (static_cast<float>(number_of_unique_reads)/static_cast<float>(load_addresses.size())) << "\n";
+    logfile << "rewrite ratio (unique writes/total writes)," << (static_cast<float>(number_of_unique_writes)/static_cast<float>(load_addresses.size())) << "\n";
+    logfile << "90\% memory footprint," << unique_memory_addresses  << "\n";
+    logfile << "global memory address entropy," << mem_entropy << "\n";
+    for(int nskip = 1; nskip < 11; nskip++){
+        float skip_value = pow(2,nskip);
+        unordered_map<unsigned, size_t> local_address_count;
+        for (unsigned i=0; i<addresses.size(); i++){
+            int local_addr = int(int(addresses[i]) / skip_value);
+            local_address_count[local_addr]++;
+        } 
+
+        float local_entropy = 0.0f;
+        for(const auto& it : local_address_count){
+            int value = (int)it.second;
+            float prob = (float)value * 1.0 / (float)memory_access_count;
+            local_entropy = local_entropy - prob * std::log2(prob);
+        }
+        logfile << "local memory address entropy -- " << nskip << " LSBs skipped," << local_entropy << "\n";
+    }
+
+    logfile << "total unique branch instructions," << sorted_branch_ops.size() << "\n";
+    logfile << "90\% branch instructions," << unique_branch_addresses << "\n";
+    logfile << "branch entropy (yokota)," << yokota_entropy_per_workload << "\n";
+    logfile << "branch entropy (average linear)," << average_entropy << "\n";
+    logfile.close();
+    //ITP -- SIMT logfile
+    std::string itb_logfile_name = logfile_name;
+    itb_logfile_name.replace(itb_logfile_name.end()-4,itb_logfile_name.end(),"_itb.log");
+    logfile.open(itb_logfile_name, std::ofstream::out | std::ofstream::app);
+    for(const auto& it : m_instructionsToBarrier)
+        logfile << it << "\n";
+*/
+    logfile.close();
+    cout << "The Architecture-Independent Workload Characterisation was written to file: " << logfile_name << endl;
+    // Restore locale
+    cout.imbue(previousLocale);
+
+
     //remove all intermediate trace files now that the statistical results are written
     
     //remove all db intermediate trace files now that the statistical results are written 
@@ -211,8 +375,9 @@ void WorkloadCharacterisation::kernelEnd(const KernelInvocation *kernelInvocatio
     }
     db_tracefile_handles.clear();
 
-    //delete load_db;
-    //delete store_db;
+    m_threads_invoked = 0;
+
+    std::system(std::string("rm -r " + compute_db_name).c_str());
     std::system(std::string("rm -r " + load_db_name).c_str());
     std::system(std::string("rm -r " + store_db_name).c_str());
     std::cout << "passed kernel end" << std::endl;
@@ -612,7 +777,7 @@ void WorkloadCharacterisation::kernelEnd(const KernelInvocation *kernelInvocatio
 
 void WorkloadCharacterisation::workGroupBegin(const WorkGroup *workGroup)
 {
-    std::cout << "starting workgroup " << workGroup->getGroupIndex() <<  std::endl;
+    //std::cout << "starting workgroup " << workGroup->getGroupIndex() <<  std::endl;
     // Create worker state if haven't already
     if (!m_state.loadMemoryOps)
     {
@@ -649,12 +814,26 @@ void WorkloadCharacterisation::workGroupBegin(const WorkGroup *workGroup)
     m_state.branch_loc=0; 
 }
 
+
 void WorkloadCharacterisation::workGroupComplete(const WorkGroup *workGroup)
 {
     lock_guard<mutex> lock(m_mtx);
 #if LEVELDB_ENABLED
-    std::cout << "finished workgroup " << workGroup->getGroupIndex() <<  std::endl;
+    //std::cout << "finished workgroup " << workGroup->getGroupIndex() <<  std::endl;
     // write essential buffers to their respective files
+    for(auto const& item: (*m_state.computeOps)){
+        std::string key = item.first;
+        unsigned int count = item.second;
+	//std::cout << "key: " << key << " was:" << query(db_tracefile_handles[compute_db_name],key);
+	update(db_tracefile_handles[compute_db_name],key,count);
+	//std::cout << " updated to:" << query(db_tracefile_handles[compute_db_name],key) << std::endl;
+    }
+
+    // add the current work-group item / thread counter to the global variable
+    m_threads_invoked += m_state.threads_invoked;
+    m_barriers_hit += m_state.barriers_hit;
+
+
 #else
     // merge operation counts back into global unordered map
     for(auto const& item: (*m_state.computeOps))
