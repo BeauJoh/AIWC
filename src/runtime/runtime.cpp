@@ -1,5 +1,5 @@
 // runtime.cpp (Oclgrind)
-// Copyright (c) 2013-2016, James Price and Simon McIntosh-Smith,
+// Copyright (c) 2013-2019, James Price and Simon McIntosh-Smith,
 // University of Bristol. All rights reserved.
 //
 // This program is provided under a three-clause BSD license. For full
@@ -26,10 +26,10 @@
 
 using namespace std;
 
-#define MAX_GLOBAL_MEM_SIZE      (128 * 1048576)
-#define MAX_CONSTANT_BUFFER_SIZE (1048576)
-#define MAX_LOCAL_MEM_SIZE       (32768)
-#define DEFAULT_MAX_WGSIZE       (1024)
+#define DEFAULT_GLOBAL_MEM_SIZE   (128 * 1048576)
+#define DEFAULT_CONSTANT_MEM_SIZE (65536)
+#define DEFAULT_LOCAL_MEM_SIZE    (32768)
+#define DEFAULT_MAX_WGSIZE        (1024)
 
 #define PLATFORM_NAME       "Oclgrind"
 #define PLATFORM_VENDOR     "University of Bristol"
@@ -167,6 +167,24 @@ namespace
       context->notify(error.c_str(), context->data, 0, NULL);
     }
   }
+
+  void releaseCommand(oclgrind::Command *command)
+  {
+    if (command)
+    {
+      asyncQueueRelease(command);
+
+      // Release dependent commands
+      while (!command->execBefore.empty())
+      {
+        oclgrind::Command *cmd = command->execBefore.front();
+        command->execBefore.pop_front();
+        releaseCommand(cmd);
+      }
+
+      delete command;
+    }
+  }
 }
 
 #if defined(_WIN32) && !defined(__MINGW32__)
@@ -229,6 +247,15 @@ clIcdGetPlatformIDsKHR
 
     m_device = new _cl_device_id;
     m_device->dispatch = m_dispatchTable;
+    m_device->globalMemSize =
+      oclgrind::getEnvInt("OCLGRIND_GLOBAL_MEM_SIZE",
+                          DEFAULT_GLOBAL_MEM_SIZE, false);
+    m_device->constantMemSize =
+      oclgrind::getEnvInt("OCLGRIND_CONSTANT_MEM_SIZE",
+                          DEFAULT_CONSTANT_MEM_SIZE, false);
+    m_device->localMemSize =
+      oclgrind::getEnvInt("OCLGRIND_LOCAL_MEM_SIZE",
+                          DEFAULT_LOCAL_MEM_SIZE, false);
     m_device->maxWGSize =
       oclgrind::getEnvInt("OCLGRIND_MAX_WGSIZE", DEFAULT_MAX_WGSIZE, false);
   }
@@ -259,6 +286,10 @@ clGetExtensionFunctionAddress
   if (strcmp(funcname, "clIcdGetPlatformIDsKHR") == 0)
   {
     return (void*)clIcdGetPlatformIDsKHR;
+  }
+  else if (strcmp(funcname, "clGetPlatformInfo") == 0)
+  {
+    return (void*)clGetPlatformInfo;
   }
   else
   {
@@ -424,7 +455,8 @@ clGetDeviceInfo
     break;
   case CL_DEVICE_MAX_COMPUTE_UNITS:
     result_size = sizeof(cl_uint);
-    result_data.cluint = 1;
+    result_data.cluint =
+        oclgrind::getEnvInt("OCLGRIND_COMPUTE_UNITS", 1, false);
     break;
   case CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS:
     result_size = sizeof(cl_uint);
@@ -471,7 +503,7 @@ clGetDeviceInfo
     break;
   case CL_DEVICE_MAX_MEM_ALLOC_SIZE:
     result_size = sizeof(cl_ulong);
-    result_data.clulong = MAX_GLOBAL_MEM_SIZE;
+    result_data.clulong = m_device->globalMemSize;
     break;
   case CL_DEVICE_IMAGE2D_MAX_WIDTH:
   case CL_DEVICE_IMAGE2D_MAX_HEIGHT:
@@ -543,11 +575,11 @@ clGetDeviceInfo
     break;
   case CL_DEVICE_GLOBAL_MEM_SIZE:
     result_size = sizeof(cl_ulong);
-    result_data.clulong = MAX_GLOBAL_MEM_SIZE;
+    result_data.clulong = device->globalMemSize;
     break;
   case CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE:
     result_size = sizeof(cl_ulong);
-    result_data.clulong = MAX_CONSTANT_BUFFER_SIZE;
+    result_data.clulong = device->constantMemSize;
     break;
   case CL_DEVICE_MAX_CONSTANT_ARGS:
     result_size = sizeof(cl_uint);
@@ -559,7 +591,7 @@ clGetDeviceInfo
     break;
   case CL_DEVICE_GLOBAL_VARIABLE_PREFERRED_TOTAL_SIZE:
     result_size = sizeof(size_t);
-    result_data.sizet = MAX_GLOBAL_MEM_SIZE;
+    result_data.sizet = device->globalMemSize;
     break;
   case CL_DEVICE_LOCAL_MEM_TYPE:
     result_size = sizeof(cl_device_local_mem_type);
@@ -567,7 +599,7 @@ clGetDeviceInfo
     break;
   case CL_DEVICE_LOCAL_MEM_SIZE:
     result_size = sizeof(cl_ulong);
-    result_data.clulong = MAX_LOCAL_MEM_SIZE;
+    result_data.clulong = device->localMemSize;
     break;
   case CL_DEVICE_ERROR_CORRECTION_SUPPORT:
     result_size = sizeof(cl_bool);
@@ -599,7 +631,8 @@ clGetDeviceInfo
     break;
   case CL_DEVICE_QUEUE_ON_HOST_PROPERTIES:
     result_size = sizeof(cl_command_queue_properties);
-    result_data.clcmdqprop = CL_QUEUE_PROFILING_ENABLE;
+    result_data.clcmdqprop =
+      CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE | CL_QUEUE_PROFILING_ENABLE;
     break;
   case CL_DEVICE_QUEUE_ON_DEVICE_PROPERTIES:
     result_size = sizeof(cl_command_queue_properties);
@@ -947,6 +980,10 @@ clReleaseContext
 
   if (--context->refCount == 0)
   {
+    if (context->properties)
+    {
+      free(context->properties);
+    }
     delete context->context;
     delete context;
   }
@@ -1041,17 +1078,12 @@ clCreateCommandQueue
     SetErrorArg(context, CL_INVALID_DEVICE, device);
     return NULL;
   }
-  if (properties & CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE)
-  {
-    SetErrorInfo(context, CL_INVALID_QUEUE_PROPERTIES,
-                 "Out-of-order command queues not supported");
-    return NULL;
-  }
 
   // Create command-queue object
+  bool out_of_order = properties & CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE;
   cl_command_queue queue;
   queue = new _cl_command_queue;
-  queue->queue = new oclgrind::Queue(context->context);
+  queue->queue = new oclgrind::Queue(context->context, out_of_order);
   queue->dispatch = m_dispatchTable;
   queue->properties = properties;
   queue->context = context;
@@ -2063,6 +2095,7 @@ clCreateSampler
   sampler->addressMode = addressing_mode;
   sampler->filterMode = filter_mode;
   sampler->sampler = bitfield;
+  sampler->refCount = 1;
 
   SetError(context, CL_SUCCESS);
   return sampler;
@@ -2863,6 +2896,15 @@ clReleaseKernel
 
   if (--kernel->refCount == 0)
   {
+
+    // Release memory allocated for image arguments
+    while (!kernel->imageArgs.empty())
+    {
+      oclgrind::Image* img = kernel->imageArgs.top();
+      kernel->imageArgs.pop();
+      delete img;
+    }
+
     delete kernel->kernel;
 
     clReleaseProgram(kernel->program);
@@ -2943,6 +2985,8 @@ clSetKernelArg
         image->format = ((cl_image*)mem)->format;
         image->desc = ((cl_image*)mem)->desc;
         *(oclgrind::Image**)value.data = image;
+        // Keep a record of the image struct for releasing it later
+        kernel->imageArgs.push(image);
       }
       else
       {
@@ -3243,15 +3287,12 @@ clWaitForEvents
         continue;
       }
 
-      // If it's not a user event, update the queue
+      // If it's not a user event, execute the associated command
       if (event_list[i]->queue)
       {
-        oclgrind::Queue::Command *cmd = event_list[i]->queue->queue->update();
-        if (cmd)
-        {
-          asyncQueueRelease(cmd);
-          delete cmd;
-        }
+        oclgrind::Command *cmd = event_list[i]->event->command;
+        event_list[i]->event->queue->execute(cmd, false);
+        releaseCommand(cmd);
 
         // If it's still not complete, update flag
         if (!isComplete(event_list[i]))
@@ -3374,6 +3415,8 @@ clCreateUserEvent
   event->type = CL_COMMAND_USER;
   event->event = new oclgrind::Event();
   event->event->state = CL_SUBMITTED;
+  event->event->command = NULL;
+  event->event->queue = NULL;
   event->refCount = 1;
 
   SetError(context, CL_SUCCESS);
@@ -3580,16 +3623,9 @@ clFinish
     ReturnErrorArg(NULL, CL_INVALID_COMMAND_QUEUE, command_queue);
   }
 
-  while (!command_queue->queue->isEmpty())
-  {
-    // TODO: Move this update to async thread?
-    oclgrind::Queue::Command *cmd = command_queue->queue->update();
-    if (cmd)
-    {
-      asyncQueueRelease(cmd);
-      delete cmd;
-    }
-  }
+  // TODO: Move this finish to async thread?
+  oclgrind::Command *cmd = command_queue->queue->finish();
+  releaseCommand(cmd);
 
   return CL_SUCCESS;
 }
@@ -3634,8 +3670,8 @@ clEnqueueReadBuffer
   }
 
   // Enqueue command
-  oclgrind::Queue::BufferCommand *cmd =
-    new oclgrind::Queue::BufferCommand(oclgrind::Queue::READ);
+  oclgrind::BufferCommand *cmd =
+    new oclgrind::BufferCommand(oclgrind::Command::READ);
   cmd->ptr = (unsigned char*)ptr;
   cmd->address = buffer->address + offset;
   cmd->size = cb;
@@ -3730,8 +3766,8 @@ clEnqueueReadBufferRect
   }
 
   // Enqueue command
-  oclgrind::Queue::BufferRectCommand *cmd =
-    new oclgrind::Queue::BufferRectCommand(oclgrind::Queue::READ_RECT);
+  oclgrind::BufferRectCommand *cmd =
+    new oclgrind::BufferRectCommand(oclgrind::Command::READ_RECT);
   cmd->ptr = (unsigned char*)ptr;
   cmd->address = buffer->address;
   cmd->buffer_offset[0] = buffer_offset;
@@ -3742,7 +3778,7 @@ clEnqueueReadBufferRect
   cmd->host_offset[2] = host_slice_pitch;
   memcpy(cmd->region, region, 3*sizeof(size_t));
   asyncQueueRetain(cmd, buffer);
-  asyncEnqueue(command_queue, CL_COMMAND_READ_BUFFER, cmd,
+  asyncEnqueue(command_queue, CL_COMMAND_READ_BUFFER_RECT, cmd,
                num_events_in_wait_list, event_wait_list, event);
 
   if (blocking_read)
@@ -3793,8 +3829,8 @@ clEnqueueWriteBuffer
   }
 
   // Enqueue command
-  oclgrind::Queue::BufferCommand *cmd =
-    new oclgrind::Queue::BufferCommand(oclgrind::Queue::WRITE);
+  oclgrind::BufferCommand *cmd =
+    new oclgrind::BufferCommand(oclgrind::Command::WRITE);
   cmd->ptr = (unsigned char*)ptr;
   cmd->address = buffer->address + offset;
   cmd->size = cb;
@@ -3889,8 +3925,8 @@ clEnqueueWriteBufferRect
   }
 
   // Enqueue command
-  oclgrind::Queue::BufferRectCommand *cmd =
-    new oclgrind::Queue::BufferRectCommand(oclgrind::Queue::WRITE_RECT);
+  oclgrind::BufferRectCommand *cmd =
+    new oclgrind::BufferRectCommand(oclgrind::Command::WRITE_RECT);
   cmd->ptr = (unsigned char*)ptr;
   cmd->address = buffer->address;
   cmd->buffer_offset[0] = buffer_offset;
@@ -3901,7 +3937,7 @@ clEnqueueWriteBufferRect
   cmd->host_offset[2] = host_slice_pitch;
   memcpy(cmd->region, region, 3*sizeof(size_t));
   asyncQueueRetain(cmd, buffer);
-  asyncEnqueue(command_queue, CL_COMMAND_WRITE_BUFFER, cmd,
+  asyncEnqueue(command_queue, CL_COMMAND_WRITE_BUFFER_RECT, cmd,
                num_events_in_wait_list, event_wait_list, event);
 
   if (blocking_write)
@@ -3951,9 +3987,31 @@ clEnqueueCopyBuffer
                     "src_offset + cb (" << src_offset << " + " << cb <<
                     ") exceeds buffer size (" << src_buffer->size << " bytes)");
   }
+  // If src and dst buffers are the same and if src_offset comes before
+  // dst_offset and src buffer size goes beyond dst_offset then there is an
+  // overlap
+  if ((src_buffer == dst_buffer) &&
+      (src_offset <= dst_offset) && ((src_offset + cb) > dst_offset))
+  {
+    ReturnErrorInfo(command_queue->context, CL_MEM_COPY_OVERLAP,
+                    "src_buffer == dst_buffer and "
+                    "src_offset + cb (" << src_offset << " + " << cb <<
+                    ") overlaps dst_offset (" << dst_offset << ")");
+  }
+  // If src and dst buffers are the same and if dst_offset comes before
+  // src_offset and dst buffer size goes beyond src_offset then there is an
+  // overlap
+  if ((src_buffer == dst_buffer) &&
+      (dst_offset <= src_offset) && ((dst_offset + cb) > src_offset))
+  {
+    ReturnErrorInfo(command_queue->context, CL_MEM_COPY_OVERLAP,
+                    "src_buffer == dst_buffer and "
+                    "dst_offset + cb (" << dst_offset << " + " << cb <<
+                    ") overlaps src_offset (" << src_offset << ")");
+  }
 
   // Enqueue command
-  oclgrind::Queue::CopyCommand *cmd = new oclgrind::Queue::CopyCommand();
+  oclgrind::CopyCommand *cmd = new oclgrind::CopyCommand();
   cmd->dst = dst_buffer->address + dst_offset;
   cmd->src = src_buffer->address + src_offset;
   cmd->size = cb;
@@ -3996,8 +4054,12 @@ clEnqueueCopyBufferRect
   {
     ReturnErrorArg(command_queue->context, CL_INVALID_MEM_OBJECT, dst_buffer);
   }
+  if (!region || region[0] == 0 || region[1] == 0 || region[2] == 0)
+  {
+    ReturnErrorArg(command_queue->context, CL_INVALID_VALUE, region);
+  }
 
-  // Compute pitches if neccessary
+  // Compute pitches if necessary
   if (src_row_pitch == 0)
   {
     src_row_pitch = region[0];
@@ -4048,7 +4110,7 @@ clEnqueueCopyBufferRect
   }
 
   // Enqueue command
-  oclgrind::Queue::CopyRectCommand *cmd = new oclgrind::Queue::CopyRectCommand();
+  oclgrind::CopyRectCommand *cmd = new oclgrind::CopyRectCommand();
   cmd->src = src_buffer->address;
   cmd->dst = dst_buffer->address;
   cmd->src_offset[0] = src_offset;
@@ -4060,7 +4122,7 @@ clEnqueueCopyBufferRect
   memcpy(cmd->region, region, 3*sizeof(size_t));
   asyncQueueRetain(cmd, src_buffer);
   asyncQueueRetain(cmd, dst_buffer);
-  asyncEnqueue(command_queue, CL_COMMAND_COPY_BUFFER, cmd,
+  asyncEnqueue(command_queue, CL_COMMAND_COPY_BUFFER_RECT, cmd,
                num_events_in_wait_list, event_wait_list, event);
 
   return CL_SUCCESS;
@@ -4117,9 +4179,9 @@ clEnqueueFillBuffer
   }
 
   // Enqueue command
-  oclgrind::Queue::FillBufferCommand *cmd =
-    new oclgrind::Queue::FillBufferCommand((const unsigned char*)pattern,
-                                          pattern_size);
+  oclgrind::FillBufferCommand *cmd =
+    new oclgrind::FillBufferCommand((const unsigned char*)pattern,
+                                     pattern_size);
   cmd->address = buffer->address + offset;
   cmd->size = cb;
   asyncQueueRetain(cmd, buffer);
@@ -4289,10 +4351,10 @@ clEnqueueFillImage
   }
 
   // Enqueue command
-  oclgrind::Queue::FillImageCommand *cmd =
-    new oclgrind::Queue::FillImageCommand(image->address, origin, region,
-                                         row_pitch, slice_pitch,
-                                         pixelSize, color);
+  oclgrind::FillImageCommand *cmd =
+    new oclgrind::FillImageCommand(image->address, origin, region,
+                                   row_pitch, slice_pitch,
+                                   pixelSize, color);
   asyncQueueRetain(cmd, image);
   asyncEnqueue(command_queue, CL_COMMAND_FILL_IMAGE, cmd,
                num_events_in_wait_list, event_wait_list, event);
@@ -4351,7 +4413,7 @@ clEnqueueReadImage
     buffer_origin, host_origin, pixel_region,
     img_row_pitch, img_slice_pitch, row_pitch, slice_pitch,
     ptr, num_events_in_wait_list, event_wait_list, event);
-  if (event)
+  if (event && ret == CL_SUCCESS)
   {
     (*event)->type = CL_COMMAND_READ_IMAGE;
   }
@@ -4408,7 +4470,7 @@ clEnqueueWriteImage
     buffer_origin, host_origin, pixel_region,
     img_row_pitch, img_slice_pitch, input_row_pitch, input_slice_pitch,
     ptr, num_events_in_wait_list, event_wait_list, event);
-  if (event)
+  if (event && ret == CL_SUCCESS)
   {
     (*event)->type = CL_COMMAND_WRITE_IMAGE;
   }
@@ -4476,7 +4538,7 @@ clEnqueueCopyImage
     src_pixel_origin, dst_pixel_origin, pixel_region,
     src_row_pitch, src_slice_pitch, dst_row_pitch, dst_slice_pitch,
     num_events_in_wait_list, event_wait_list, event);
-  if (event)
+  if (event && ret == CL_SUCCESS)
   {
     (*event)->type = CL_COMMAND_COPY_IMAGE;
   }
@@ -4527,7 +4589,7 @@ clEnqueueCopyImageToBuffer
     src_pixel_origin, dst_origin, pixel_region,
     src_row_pitch, src_slice_pitch, 0, 0,
     num_events_in_wait_list, event_wait_list, event);
-  if (event)
+  if (event && ret == CL_SUCCESS)
   {
     (*event)->type = CL_COMMAND_COPY_IMAGE_TO_BUFFER;
   }
@@ -4578,7 +4640,7 @@ clEnqueueCopyBufferToImage
     src_origin, dst_pixel_origin, pixel_region,
     0, 0, dst_row_pitch, dst_slice_pitch,
     num_events_in_wait_list, event_wait_list, event);
-  if (event)
+  if (event && ret == CL_SUCCESS)
   {
     (*event)->type = CL_COMMAND_COPY_BUFFER_TO_IMAGE;
   }
@@ -4645,7 +4707,7 @@ clEnqueueMapBuffer
   }
 
   // Enqueue command
-  oclgrind::Queue::MapCommand *cmd = new oclgrind::Queue::MapCommand();
+  oclgrind::MapCommand *cmd = new oclgrind::MapCommand();
   cmd->address = buffer->address;
   cmd->offset  = offset;
   cmd->size    = cb;
@@ -4778,7 +4840,7 @@ clEnqueueMapImage
   }
 
   // Enqueue command
-  oclgrind::Queue::MapCommand *cmd = new oclgrind::Queue::MapCommand();
+  oclgrind::MapCommand *cmd = new oclgrind::MapCommand();
   cmd->address = image->address;
   cmd->offset  = offset;
   cmd->size    = size;
@@ -4816,9 +4878,13 @@ clEnqueueUnmapMemObject
   {
     ReturnErrorArg(command_queue->context, CL_INVALID_MEM_OBJECT, memobj);
   }
+  if (!mapped_ptr)
+  {
+    ReturnErrorArg(command_queue->context, CL_INVALID_VALUE, mapped_ptr);
+  }
 
   // Enqueue command
-  oclgrind::Queue::UnmapCommand *cmd = new oclgrind::Queue::UnmapCommand();
+  oclgrind::UnmapCommand *cmd = new oclgrind::UnmapCommand();
   cmd->address = memobj->address;
   cmd->ptr     = mapped_ptr;
   asyncQueueRetain(cmd, memobj);
@@ -4847,7 +4913,7 @@ clEnqueueMigrateMemObjects
   }
 
   // Enqueue command
-  oclgrind::Queue::Command *cmd = new oclgrind::Queue::Command();
+  oclgrind::Command *cmd = new oclgrind::Command();
   asyncEnqueue(command_queue, CL_COMMAND_MIGRATE_MEM_OBJECTS, cmd,
                num_events_in_wait_list, event_wait_list, event);
 
@@ -4896,7 +4962,7 @@ clEnqueueNDRangeKernel
       ReturnErrorInfo(command_queue->context, CL_INVALID_GLOBAL_WORK_SIZE,
                       "global_work_size[" << i << "] = 0");
     }
-    if (kernel->kernel->getProgram()->requiresUniformWorkGroups() &&
+    if (kernel->kernel->requiresUniformWorkGroups() &&
         local_work_size && global_work_size[i] % local_work_size[i])
     {
       ReturnErrorInfo(command_queue->context, CL_INVALID_WORK_GROUP_SIZE,
@@ -4937,8 +5003,33 @@ clEnqueueNDRangeKernel
                     "Not all kernel arguments set");
   }
 
+  // Check that local memory requirement is within device maximum
+  size_t totalLocal = kernel->kernel->getLocalMemorySize();
+  if (totalLocal > m_device->localMemSize)
+  {
+    ReturnErrorInfo(command_queue->context, CL_OUT_OF_RESOURCES,
+                    "total local memory size (" << totalLocal << ")"
+                    " exceeds device maximum of " << m_device->localMemSize);
+  }
+
+  // Check that constant memory requirement is within device maximum
+  size_t totalConstant = 0;
+  std::map<cl_uint,cl_mem>::iterator arg;
+  for (arg = kernel->memArgs.begin(); arg != kernel->memArgs.end(); arg++)
+  {
+    if (kernel->kernel->getArgumentAddressQualifier(arg->first) ==
+        CL_KERNEL_ARG_ADDRESS_CONSTANT)
+      totalConstant += arg->second->size;
+  }
+  if (totalConstant > m_device->constantMemSize)
+  {
+    ReturnErrorInfo(command_queue->context, CL_OUT_OF_RESOURCES,
+                    "total constant memory size (" << totalConstant << ")"
+                    " exceeds device maximum of " << m_device->constantMemSize);
+  }
+
   // Set-up offsets and sizes
-  oclgrind::Queue::KernelCommand *cmd = new oclgrind::Queue::KernelCommand();
+  oclgrind::KernelCommand *cmd = new oclgrind::KernelCommand();
   cmd->kernel = new oclgrind::Kernel(*kernel->kernel);
   cmd->work_dim = work_dim;
   cmd->globalSize   = oclgrind::Size3(1, 1, 1);
@@ -5045,8 +5136,8 @@ clEnqueueNativeKernel
   }
 
   // Create command
-  oclgrind::Queue::NativeKernelCommand *cmd =
-    new oclgrind::Queue::NativeKernelCommand(user_func, args, cb_args);
+  oclgrind::NativeKernelCommand *cmd =
+    new oclgrind::NativeKernelCommand(user_func, args, cb_args);
 
   // Retain memory objects
   for (unsigned i = 0; i < num_mem_objects; i++)
@@ -5087,7 +5178,7 @@ clEnqueueMarkerWithWaitList
   }
 
   // Enqueue command
-  oclgrind::Queue::Command *cmd = new oclgrind::Queue::Command();
+  oclgrind::Command *cmd = new oclgrind::Command();
   asyncEnqueue(command_queue, CL_COMMAND_MARKER, cmd,
                num_events_in_wait_list, event_wait_list, event);
 
@@ -5110,7 +5201,7 @@ clEnqueueBarrierWithWaitList
   }
 
   // Enqueue command
-  oclgrind::Queue::Command *cmd = new oclgrind::Queue::Command();
+  oclgrind::Command *cmd = new oclgrind::Command();
   asyncEnqueue(command_queue, CL_COMMAND_BARRIER, cmd,
                num_events_in_wait_list, event_wait_list, event);
 
@@ -5152,7 +5243,7 @@ clEnqueueWaitForEvents
   }
 
   // Enqueue command
-  oclgrind::Queue::Command *cmd = new oclgrind::Queue::Command();
+  oclgrind::Command *cmd = new oclgrind::Command();
   asyncEnqueue(command_queue, CL_COMMAND_BARRIER, cmd,
                num_events, event_list, NULL);
 
@@ -5575,6 +5666,7 @@ clCreateCommandQueueWithProperties
 
   // Parse properties
   cl_command_queue_properties props = 0;
+  bool out_of_order = false;
   unsigned i = 0;
   while (properties && properties[i])
   {
@@ -5583,9 +5675,7 @@ clCreateCommandQueueWithProperties
     case CL_QUEUE_PROPERTIES:
       if (properties[i] & CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE)
       {
-        SetErrorInfo(context, CL_INVALID_QUEUE_PROPERTIES,
-                     "Out-of-order command queues not supported");
-        return NULL;
+        out_of_order = true;
       }
       if (properties[i] &
           (CL_QUEUE_ON_DEVICE|CL_QUEUE_ON_DEVICE_DEFAULT))
@@ -5609,7 +5699,7 @@ clCreateCommandQueueWithProperties
   // Create command-queue object
   cl_command_queue queue;
   queue = new _cl_command_queue;
-  queue->queue = new oclgrind::Queue(context->context);
+  queue->queue = new oclgrind::Queue(context->context, out_of_order);
   queue->dispatch = m_dispatchTable;
   queue->properties = props;
   queue->context = context;

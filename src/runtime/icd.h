@@ -1,5 +1,5 @@
 // icd.h (Oclgrind)
-// Copyright (c) 2013-2016, James Price and Simon McIntosh-Smith,
+// Copyright (c) 2013-2019, James Price and Simon McIntosh-Smith,
 // University of Bristol. All rights reserved.
 //
 // This program is provided under a three-clause BSD license. For full
@@ -137,7 +137,9 @@ namespace oclgrind
   class Kernel;
   class Program;
   class Queue;
+  struct Command;
   struct Event;
+  struct Image;
 }
 
 struct _cl_platform_id
@@ -148,6 +150,9 @@ struct _cl_platform_id
 struct _cl_device_id
 {
   void **dispatch;
+  size_t globalMemSize;
+  size_t constantMemSize;
+  size_t localMemSize;
   size_t maxWGSize;
 };
 
@@ -206,6 +211,7 @@ struct _cl_kernel
   oclgrind::Kernel *kernel;
   cl_program program;
   std::map<cl_uint, cl_mem> memArgs;
+  std::stack<oclgrind::Image*> imageArgs;
   unsigned int refCount;
 };
 

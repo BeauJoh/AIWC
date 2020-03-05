@@ -1,5 +1,5 @@
 // Simulation.cpp (Oclgrind)
-// Copyright (c) 2013-2016, James Price and Simon McIntosh-Smith,
+// Copyright (c) 2013-2019, James Price and Simon McIntosh-Smith,
 // University of Bristol. All rights reserved.
 //
 // This program is provided under a three-clause BSD license. For full
@@ -204,7 +204,7 @@ bool Simulation::load(const char *filename)
     }
 
     // Ensure work-group size exactly divides NDRange if necessary
-    if (m_program->requiresUniformWorkGroups() &&
+    if (m_kernel->requiresUniformWorkGroups() &&
         (m_ndrange.x % m_wgsize.x ||
          m_ndrange.y % m_wgsize.y ||
          m_ndrange.z % m_wgsize.z))

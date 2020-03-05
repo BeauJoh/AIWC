@@ -1,5 +1,5 @@
 // WorkItemBuiltins.cpp (Oclgrind)
-// Copyright (c) 2013-2016, James Price and Simon McIntosh-Smith,
+// Copyright (c) 2013-2019, James Price and Simon McIntosh-Smith,
 // University of Bristol. All rights reserved.
 //
 // This program is provided under a three-clause BSD license. For full
@@ -1217,11 +1217,7 @@ namespace oclgrind
       // Check for sampler version
       if (callInst->getNumArgOperands() > 2)
       {
-#if LLVM_VERSION < 40
-        sampler = UARG(1);
-#else
         sampler = ((llvm::ConstantInt*)PARG(1))->getZExtValue();
-#endif
         coordIndex = 2;
       }
 
@@ -1339,11 +1335,7 @@ namespace oclgrind
       // Check for sampler version
       if (callInst->getNumArgOperands() > 2)
       {
-#if LLVM_VERSION < 40
-        sampler = UARG(1);
-#else
         sampler = ((llvm::ConstantInt*)PARG(1))->getZExtValue();
-#endif
         coordIndex = 2;
       }
 
@@ -1416,11 +1408,7 @@ namespace oclgrind
       // Check for sampler version
       if (callInst->getNumArgOperands() > 2)
       {
-#if LLVM_VERSION < 40
-        sampler = UARG(1);
-#else
         sampler = ((llvm::ConstantInt*)PARG(1))->getZExtValue();
-#endif
         coordIndex = 2;
       }
 
@@ -2609,7 +2597,7 @@ namespace oclgrind
     {
       for (unsigned i = 0; i < result.num; i++)
       {
-        result.setUInt(UARGV(0, UARGV(1, i)), i);
+        result.setUInt(UARGV(0, UARGV(1, i) % result.num), i);
       }
     }
 
@@ -2624,7 +2612,7 @@ namespace oclgrind
         }
 
         uint64_t src = 0;
-        uint64_t index = UARGV(2, i);
+        uint64_t index = UARGV(2, i) % (2 * m);
         if (index >= m)
         {
           index -= m;
@@ -3582,10 +3570,8 @@ namespace oclgrind
     ADD_BUILTIN("write_imagef", write_imagef, NULL);
     ADD_BUILTIN("write_imagei", write_imagei, NULL);
     ADD_BUILTIN("write_imageui", write_imageui, NULL);
-#if LLVM_VERSION >= 40
     ADD_BUILTIN("__translate_sampler_initializer",
                 translate_sampler_initializer, NULL);
-#endif
 
     // Integer Functions
     ADD_BUILTIN("abs", abs_builtin, NULL);

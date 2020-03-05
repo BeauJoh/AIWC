@@ -1,5 +1,5 @@
 // Kernel.h (Oclgrind)
-// Copyright (c) 2013-2016, James Price and Simon McIntosh-Smith,
+// Copyright (c) 2013-2019, James Price and Simon McIntosh-Smith,
 // University of Bristol. All rights reserved.
 //
 // This program is provided under a three-clause BSD license. For full
@@ -50,6 +50,7 @@ namespace oclgrind
     unsigned int getNumArguments() const;
     const Program* getProgram() const;
     void getRequiredWorkGroupSize(size_t reqdWorkGroupSize[3]) const;
+    bool requiresUniformWorkGroups() const;
     void setArgument(unsigned int index, TypedValue value);
 
   private:
@@ -59,6 +60,8 @@ namespace oclgrind
     std::string m_name;
 
     TypedValueMap m_values;
+
+    bool m_requiresUniformWorkGroups;
 
     const llvm::Argument* getArgument(unsigned int index) const;
     const llvm::Metadata* getArgumentMetadata(std::string name,

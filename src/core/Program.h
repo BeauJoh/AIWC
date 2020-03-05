@@ -1,5 +1,5 @@
 // Program.h (Oclgrind)
-// Copyright (c) 2013-2016, James Price and Simon McIntosh-Smith,
+// Copyright (c) 2013-2019, James Price and Simon McIntosh-Smith,
 // University of Bristol. All rights reserved.
 //
 // This program is provided under a three-clause BSD license. For full
@@ -59,7 +59,6 @@ namespace oclgrind
     const TypedValue& getProgramScopeVar(const llvm::Value *var) const;
     size_t getTotalProgramScopeVarSize() const;
     unsigned long getUID() const;
-    bool requiresUniformWorkGroups() const;
 
   private:
     Program(const Context *context, llvm::Module *module);
@@ -71,8 +70,6 @@ namespace oclgrind
     unsigned int m_buildStatus;
     const Context *m_context;
     std::vector<std::string> m_sourceLines;
-
-    bool m_requiresUniformWorkGroups;
 
     TypedValueMap m_programScopeVars;
     size_t m_totalProgramScopeVarSize;
