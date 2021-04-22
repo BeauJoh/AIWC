@@ -71,9 +71,10 @@ include_directories(${LLVM_INCLUDE_DIRS})
 link_directories(${LLVM_LIBRARY_DIRS})
 
 #to build against a shared version of LLVM:
-exec_program("${CLANG_ROOT}/bin/llvm-config --libfiles"
+exec_program("${CLANG_ROOT}/bin/llvm-config --libfiles --system-libs"
     WORKING_DIRECTORY ${CLANG_ROOT}/bin/llvm-config
     OUTPUT_VARIABLE LLVM_LIBS)
+string(REGEX REPLACE "\n" " " LLVM_LIBS "${LLVM_LIBS}")
 separate_arguments(LLVM_LIBS)
 add_compile_definitions(LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1)
 message("llvm libs are now: ${LLVM_LIBS}")
