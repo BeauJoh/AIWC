@@ -42,7 +42,7 @@ public:
   virtual void workItemComplete(const WorkItem *workItem) override;
   virtual void workItemBarrier(const WorkItem *workItem) override;
   virtual void workItemClearBarrier(const WorkItem *workItem) override;
-  
+
   struct ledgerElement {
     size_t address;
     uint32_t timestep;
@@ -80,9 +80,9 @@ private:
     std::unordered_map<size_t, uint32_t> *loadOps;
     // true -> load; false -> store.
     bool previous_instruction_is_branch;
-    std::string target1, target2;
-    uint32_t branch_loc;
-    std::unordered_map<size_t, std::vector<bool>> *branchOps;
+    llvm::BasicBlock *target1, *target2;
+    const llvm::Instruction *branch_loc;
+    std::unordered_map<const llvm::Instruction*, std::vector<bool>> *branchOps;
     uint32_t threads_invoked;
     uint32_t barriers_hit;
     uint32_t instruction_count;
