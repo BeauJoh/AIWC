@@ -42,7 +42,7 @@ public:
   virtual void workItemComplete(const WorkItem *workItem) override;
   virtual void workItemBarrier(const WorkItem *workItem) override;
   virtual void workItemClearBarrier(const WorkItem *workItem) override;
-  
+
   struct ledgerElement {
     size_t address;
     uint32_t timestep;
@@ -51,7 +51,7 @@ private:
   // std::unordered_map<std::pair<size_t, bool>, uint32_t> m_memoryOps;
   std::unordered_map<size_t, uint32_t> m_storeOps;
   std::unordered_map<size_t, uint32_t> m_loadOps;
-  std::unordered_map<std::string, size_t> m_computeOps;
+  std::unordered_map<unsigned, size_t> m_computeOps;
   std::unordered_map<size_t, std::unordered_map<uint16_t, uint32_t>> m_branchPatterns;
   std::unordered_map<size_t, uint32_t> m_branchCounts;
   std::vector<uint32_t> m_instructionsToBarrier;
@@ -74,7 +74,7 @@ private:
   std::vector<std::vector<double>> m_psl_per_group;
 
   struct WorkerState {
-    std::unordered_map<std::string, size_t> *computeOps;
+    std::unordered_map<unsigned, size_t> *computeOps;
     //std::unordered_map<std::pair<size_t, bool>, uint32_t> *memoryOps;
     std::unordered_map<size_t, uint32_t> *storeOps;
     std::unordered_map<size_t, uint32_t> *loadOps;
